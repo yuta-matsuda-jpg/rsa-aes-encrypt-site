@@ -64,8 +64,11 @@
     const textEncoder = new TextEncoder();
     const textDecoder = new TextDecoder();
 
-    function arrayBufferToBase64(ab) {
-      const bytes = new Uint8Array(ab);
-      let binary = "";
-      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-      return btoa
+   function arrayBufferToBase64(ab) {
+  const bytes = new Uint8Array(ab);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
