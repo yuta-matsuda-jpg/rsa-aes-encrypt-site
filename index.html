@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>RSA/AES暗号ツール</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 16px; }
+    h1 { margin-bottom: 8px; }
+    label { font-weight: 600; }
+    textarea, select, button, input[type="file"] { width: 100%; margin: 8px 0; padding: 10px; font-size: 14px; }
+    button { cursor: pointer; }
+    pre { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px; padding: 12px; overflow: auto; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    @media (max-width: 720px) {
+      .grid, .actions { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <h1>RSA/AES暗号ツール</h1>
+  <p>ブラウザ内でRSAまたはAES鍵を生成し、選択した方式で平文を暗号化します。</p>
+
+  <label for="plaintext">平文</label>
+  <textarea id="plaintext" rows="6" placeholder="ここに平文を入力"></textarea>
+
+  <div class="grid">
+    <div>
+      <label for="algo">暗号方式</label>
+      <select id="algo">
+        <option value="RSA">RSA-OAEP</option>
+        <option value="AES">AES-GCM</option>
+      </select>
+    </div>
+    <div>
+      <label for="modulusLength">RSA鍵長（bit）</label>
+      <select id="modulusLength">
+        <option value="2048">2048</option>
+        <option value="3072">3072</option>
+        <option value="4096">4096</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="generate">鍵を生成</button>
+    <button id="encrypt" disabled>暗号化</button>
+    <button id="downloadPriv" disabled>秘密鍵ダウンロード（PEM）</button>
+    <button id="downloadPub" disabled>公開鍵ダウンロード（PEM）</button>
+  </div>
+
+  <h2>結果</h2>
+  <h3>暗号文</h3>
+  <pre id="ciphertext"></pre>
+
+  <h3>公開鍵（RSA選択時のみ）</h3>
+  <pre id="pubPem"></pre>
+
+  <h3>秘密鍵（RSA選択時のみ）</h3>
+  <pre id="privPem"></pre>
+
+  <script type="module">
+    const textEncoder = new TextEncoder();
+    const textDecoder = new TextDecoder();
+
+    function arrayBufferToBase64(ab) {
+      const bytes = new Uint8Array(ab);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa
