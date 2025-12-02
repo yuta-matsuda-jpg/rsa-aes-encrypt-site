@@ -1,0 +1,225 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>暗号デモ 秒単位表示（10の冪表記）</title>
+<style>
+  body{font-family:system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "メイリオ", sans-serif; padding:20px; max-width:900px}
+  label{display:block;margin-top:12px}
+  textarea{width:100%;box-sizing:border-box}
+  select, button{margin-top:8px}
+  pre{background:#f7f7f7;padding:12px;border-radius:6px;white-space:pre-wrap}
+  .note{color:#666;font-size:0.9em;margin-top:8px}
+</style>
+
+<h3>暗号デモ 秒単位表示（10の冪表記）</h3>
+
+<label><strong>平文</strong>
+  <textarea id="plain" rows="5" placeholder="ここに平文を入力してください"></textarea>
+</label>
+
+<label><strong>方式</strong>
+  <select id="mode">
+    <option value="rsa">RSA n=15 — 学習用</option>
+    <option value="aes-128">AES-128 (AES-GCM)</option>
+    <option value="aes-256">AES-256 (AES-GCM)</option>
+    <option value="aes-512">AES-512 (二重AES-256 デモ実行可)</option>
+  </select>
+</label>
+
+<button id="run">暗号化 / 復号</button>
+<div class="note">
+  注意: RSA n=15 は学習用の簡易実装です。AES-512 は標準外のため本デモでは「512ビット鍵を生成してAES-256を2回適用」する方式で動作させます。実運用には使用しないでください。
+</div>
+
+<pre id="out">結果はここに表示されます。</pre>
+
+<script>
+/* 出力ヘルパー */
+const outEl = document.getElementById('out');
+const out = txt => outEl.textContent = txt;
+
+/* BigInt べき乗モジュール */
+function modPow(base, exp, mod){
+  let r = 1n;
+  let b = BigInt(base);
+  let e = BigInt(exp);
+  let m = BigInt(mod);
+  while(e > 0n){
+    if(e & 1n) r = (r * b) % m;
+    b = (b * b) % m;
+    e >>= 1n;
+  }
+  return r;
+}
+
+/* performance.now() の最小非ゼロ差をサンプリングして分解能を推定（ms単位） */
+function measureResolutionMs(samples = 2000){
+  let prev = performance.now();
+  let minPos = Infinity;
+  for(let i=0;i<samples;i++){
+    const t = performance.now();
+    const d = t - prev;
+    if(d > 0 && d < minPos) minPos = d;
+    prev = t;
+  }
+  return isFinite(minPos) ? minPos : 0.001; // fallback 1e-3 ms
+}
+
+/* 10の冪表記（1-10のn乗表記）で表示する関数（e表記は使わない） */
+function toPowerOfTenString(value){ 
+  // value: 秒単位の正の数（>0）
+  // 表示は「m × 10^exp s」, m は 1 <= m < 10 の形で有効数字3桁程度
+  if(value <= 0) return null;
+  const exp = Math.floor(Math.log10(value));
+  const mantissa = value / Math.pow(10, exp);
+  // mantissa を 3 有効数字に丸める
+  const mRounded = Math.round(mantissa * 100) / 100;
+  // もし丸めで 10.00 になったら exp を +1 して mantissa を 1.00 にする
+  if(mRounded >= 10){
+    const m2 = (mRounded / 10).toFixed(2).replace(/\.?0+$/,'');
+    return `${m2}×10^${exp+1} s`;
+  } else {
+    // 小数点不要な場合は整数表示にする
+    const mStr = (Math.abs(mRounded - Math.round(mRounded)) < 1e-9) ? String(Math.round(mRounded)) : String(mRounded).replace(/\.?0+$/,'');
+    return `${mStr}×10^${exp} s`;
+  }
+}
+
+/* 秒単位での表示関数（分解能を使って "< 1×10^n s" 表示も行う） */
+function fmtTimeSeconds(deltaMs, resolutionMs){
+  // deltaMs: ミリ秒単位の差
+  const deltaS = deltaMs / 1000;         // 秒
+  const resS = resolutionMs / 1000;      // 秒
+  if(deltaS > 0){
+    // 大きめの値は通常表記（小数点）で、非常に小さい値は 10^n 表記にする
+    if(deltaS >= 1){
+      return deltaS.toFixed(3) + ' s';
+    } else if(deltaS >= 0.001){
+      return deltaS.toFixed(6) + ' s';
+    } else {
+      // 小さい値は 10 の冪表記
+      return toPowerOfTenString(deltaS);
+    }
+  } else {
+    // deltaS == 0 の場合は分解能を使って "< 1×10^n s" 表示
+    // resS が 0 の可能性は低いが保険
+    const effective = resS > 0 ? resS : 1e-6;
+    // 表示する閾値は effective の 10^k 形式で表す（1<=m<10 の形にする）
+    const powStr = toPowerOfTenString(effective);
+    if(!powStr) return '< 1×10^0 s';
+    // powStr は "m×10^exp s" なので "< m×10^exp s" にするが、ユーザー要望は「1-10のn乗表記」なので
+    // m が 1 でない場合でも "< m×10^exp s" を許容する（例: "< 2×10^-6 s"）
+    return `< ${powStr}`;
+  }
+}
+
+/* Base64 ヘルパー */
+function toBase64(buffer){
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for(let i=0;i<bytes.byteLength;i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+/* AES-GCM wrapper */
+async function aesGcmEncrypt(key, iv, data){
+  return await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, data);
+}
+async function aesGcmDecrypt(key, iv, ct){
+  return await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct);
+}
+
+/* 256bit 生鍵バイト列から AES キーを作る */
+async function importAesKeyFromBytes(keyBytes){
+  return await crypto.subtle.importKey('raw', keyBytes, {name:'AES-GCM'}, true, ['encrypt','decrypt']);
+}
+
+/* メイン処理 */
+document.getElementById('run').onclick = async () => {
+  const plain = document.getElementById('plain').value || '';
+  const mode = document.getElementById('mode').value;
+  const resolutionMs = measureResolutionMs();
+
+  try {
+    if(mode === 'rsa'){
+      // RSA 学習用 n=15
+      const n = 15n, e = 3n, d = 3n;
+      const bytes = new TextEncoder().encode(plain);
+      let m = 0n;
+      for(let i=0;i<bytes.length;i++){
+        m = m * 256n + BigInt(bytes[i]);
+      }
+      const t0 = performance.now();
+      const c = modPow(m, e, n);
+      const t1 = performance.now();
+      const t2 = performance.now();
+      const m2 = modPow(c, d, n);
+      const t3 = performance.now();
+
+      out(
+`方式: RSA n=15 学習用
+暗号文: ${c.toString()}
+暗号化時間: ${fmtTimeSeconds(t1-t0, resolutionMs)}
+復号時間: ${fmtTimeSeconds(t3-t2, resolutionMs)}
+復号(数値): ${m2.toString()}
+注: RSA n=15 は学習用の簡易実装です。元の平文が大きい場合や n が小さいため復元できないことがあります。`
+      );
+    } else if(mode === 'aes-128' || mode === 'aes-256'){
+      const len = mode === 'aes-128' ? 128 : 256;
+      const enc = new TextEncoder().encode(plain);
+      const key = await crypto.subtle.generateKey({name:'AES-GCM', length: len}, true, ['encrypt','decrypt']);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+
+      const t0 = performance.now();
+      const ct = await aesGcmEncrypt(key, iv, enc);
+      const t1 = performance.now();
+
+      const t2 = performance.now();
+      const ptBuf = await aesGcmDecrypt(key, iv, ct);
+      const t3 = performance.now();
+
+      out(
+`方式: ${mode.toUpperCase()} AES-GCM
+暗号文(Base64): ${toBase64(ct)}
+IV(Base64): ${toBase64(iv)}
+暗号化時間: ${fmtTimeSeconds(t1-t0, resolutionMs)}
+復号時間: ${fmtTimeSeconds(t3-t2, resolutionMs)}
+復号文: ${new TextDecoder().decode(ptBuf)}`
+      );
+    } else if(mode === 'aes-512'){
+      // AES-512 デモ: 512ビット鍵を生成して AES-256 を2回適用する（二重暗号化）
+      const enc = new TextEncoder().encode(plain);
+      const key512 = crypto.getRandomValues(new Uint8Array(64)); // 512-bit
+      const keyA_bytes = key512.slice(0,32);
+      const keyB_bytes = key512.slice(32,64);
+      const keyA = await importAesKeyFromBytes(keyA_bytes);
+      const keyB = await importAesKeyFromBytes(keyB_bytes);
+      const ivA = crypto.getRandomValues(new Uint8Array(12));
+      const ivB = crypto.getRandomValues(new Uint8Array(12));
+
+      const t0 = performance.now();
+      const ct1 = await aesGcmEncrypt(keyA, ivA, enc);                 // layer A
+      const ct2 = await aesGcmEncrypt(keyB, ivB, new Uint8Array(ct1)); // layer B
+      const t1 = performance.now();
+
+      const t2 = performance.now();
+      const dec1 = await aesGcmDecrypt(keyB, ivB, ct2); // decrypt layer B -> ct1
+      const dec2 = await aesGcmDecrypt(keyA, ivA, dec1); // decrypt layer A -> plaintext
+      const t3 = performance.now();
+
+      out(
+`方式: AES-512 デモ（二重AES-256）
+暗号文(Base64): ${toBase64(ct2)}
+IVs(Base64): layerA=${toBase64(ivA)}; layerB=${toBase64(ivB)}
+暗号化時間(合計): ${fmtTimeSeconds(t1-t0, resolutionMs)}
+復号時間(合計): ${fmtTimeSeconds(t3-t2, resolutionMs)}
+復号文: ${new TextDecoder().decode(dec2)}
+注: AES-512 は標準仕様ではありません。本実装はデモ目的で「512ビット鍵を生成してAES-256を2回適用」しています。`
+      );
+    } else {
+      out('未対応の方式です');
+    }
+  } catch(err){
+    out('エラーが発生しました: ' + String(err));
+  }
+};
+</script>
